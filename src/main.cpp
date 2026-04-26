@@ -7,103 +7,108 @@ struct EnergyData {
     float powerWatts;
 } sharedData;
 
-// Mutex to prevent Core 0 from reading while Core 1 is writing
 SemaphoreHandle_t dataMutex;
 
 // --- Task Handles ---
 TaskHandle_t TaskSamplingHandle;
 TaskHandle_t TaskOutputHandle;
 
-// --- Constants ---
+// --- Constants & Hardware Calibration ---
 const int SENSOR_PIN = 34;
 const float VOLTAGE_AC = 127.0;
-const int SAMPLES = 1000;
-const int ADC_OFFSET = 2048;
-const float MAX_AMPS = 30.0;
+const int SAMPLES = 2000;      // Increased for better averaging
+const int ADC_OFFSET = 2048;   // Midpoint of 12-bit ADC
+
+// Calibration breakdown:
+const float ADC_VOLTS_PER_STEP = 3.3 / 4096.0;
+const float BURDEN_RESISTOR = 22.0;
+const float CT_RATIO = 2000.0; // 100A:50mA = 2000:1
 
 // --- Function Prototypes ---
 void TaskSampling(void *pvParameters);
 void TaskOutput(void *pvParameters);
 
-// --- Simulation ---
-float simCurrentRMS = 15.0; // Simulate 15 Amperes
-unsigned long startTime = 0;
-
 void setup() {
     Serial.begin(115200);
+    
+    // Configure ADC precision
+    analogReadResolution(12); 
+    
     dataMutex = xSemaphoreCreateMutex();
 
-    // Create Task 1: Sampling (Pinned to Core 1)
     xTaskCreatePinnedToCore(
         TaskSampling, "Sampling", 4096, NULL, 1, &TaskSamplingHandle, 1
     );
 
-    // Create Task 2: Output (Pinned to Core 0)
     xTaskCreatePinnedToCore(
         TaskOutput, "Output", 4096, NULL, 1, &TaskOutputHandle, 0
     );
 }
 
 void loop() {
-    // Empty! FreeRTOS manages everything.
     vTaskDelete(NULL); 
 }
 
-// --- Task 1: Electrical Math (High Priority) ---
+// --- Task 1: Real-Time Signal Processing (Core 1) ---
 void TaskSampling(void *pvParameters) {
-    startTime = millis();
-
     for (;;) {
         uint64_t sumSquares = 0;
-        for (int i = 0; i < SAMPLES; i++) {
-            
-            // --- START SIMULATION BLOCK ---
-            float t = (micros() / 1000000.0); // Current time in seconds
-            
-            // Calculate peak amplitude in ADC units for the desired RMS Amps
-            // Peak = RMS * sqrt(2). Then scale to ADC range (2048 = 30A)
-            float peakADC = (simCurrentRMS * sqrt(2) / MAX_AMPS) * 2048.0;
-            
-            // Generate the biased sine wave: 2048 + (Peak * sin(2*pi*60*t))
-            float virtualSignal = 2048.0 + (peakADC * sin(2.0 * PI * 60.0 * t));
-            
-            int raw = (int)virtualSignal; 
-            // --- END SIMULATION BLOCK ---
 
-            int centered = analogRead(SENSOR_PIN) - ADC_OFFSET;
+        for (int i = 0; i < SAMPLES; i++) {
+            // Read actual hardware
+            int raw = analogRead(SENSOR_PIN);
+            
+            // Remove the 1.65V DC Bias
+            int centered = raw - ADC_OFFSET;
+            
+            // Accumulate square of current
             sumSquares += (int32_t)centered * centered;
+            
+            // 100us = 10kHz sampling frequency
             delayMicroseconds(100); 
         }
 
+        // 1. Calculate statistical RMS from raw units
         float rmsRaw = sqrt((float)sumSquares / SAMPLES);
-        float amps = (rmsRaw / 2048.0) * MAX_AMPS;
-        if (amps < 0.10) amps = 0.0;
 
-        // Securely update the shared data
+        // 2. Convert raw units to Volts
+        float rmsVoltage = rmsRaw * ADC_VOLTS_PER_STEP;
+
+        // 3. Convert Volts to Primary Amps: (V / R_burden) * CT_Ratio
+        float amps = (rmsVoltage / BURDEN_RESISTOR) * CT_RATIO;
+
+        // Digital Noise Gate (filters out ADC jitter at 0A)
+        if (amps < 0.15) amps = 0.0;
+
+        // Update shared structure
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
             sharedData.currentAmps = amps;
             sharedData.powerWatts = amps * VOLTAGE_AC;
             xSemaphoreGive(dataMutex);
         }
         
-        vTaskDelay(pdMS_TO_TICKS(10)); // Yield to the OS briefly
+        // Small rest to prevent watchdog triggers
+        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
 
-// --- Task 2: Terminal Output ---
+// --- Task 2: UI / Terminal Output (Core 0) ---
 void TaskOutput(void *pvParameters) {
     for (;;) {
         float localAmps, localWatts;
 
-        // Securely read the data
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
             localAmps = sharedData.currentAmps;
             localWatts = sharedData.powerWatts;
             xSemaphoreGive(dataMutex);
         }
 
-        Serial.printf(">>> CORE_0 | I: %.3f A | P: %.1f W\n", localAmps, localWatts);
+        Serial.printf("--- ENERGY MONITOR ---\n");
+        Serial.printf("Current: %.3f A\n", localAmps);
+        Serial.printf("Power  : %.1f W\n", localWatts);
+        Serial.printf("Core   : %d\n", xPortGetCoreID());
+        Serial.println("----------------------");
         
-        vTaskDelay(pdMS_TO_TICKS(500)); // Output every half second
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Update every second
     }
 }
