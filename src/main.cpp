@@ -32,18 +32,19 @@ void TaskOutput(void *pvParameters);
 void setup() {
     Serial.begin(115200);
     
-    // Configure ADC precision
-    analogReadResolution(12); 
+    // --- Auto-Calibration Sequence ---
+    Serial.println("[SYSTEM] Calibrating ADC DC-Offset baseline...");
+    long running_sum = 0;
+    const int calibration_samples = 3000;
     
-    dataMutex = xSemaphoreCreateMutex();
-
-    xTaskCreatePinnedToCore(
-        TaskSampling, "Sampling", 4096, NULL, 1, &TaskSamplingHandle, 1
-    );
-
-    xTaskCreatePinnedToCore(
-        TaskOutput, "Output", 4096, NULL, 1, &TaskOutputHandle, 0
-    );
+    for (int i = 0; i < calibration_samples; i++) {
+        running_sum += analogRead(SENSOR_PIN);
+        delayMicroseconds(100);
+    }
+    
+    // Assign the real physical average to our runtime offset
+    adc_hardware_offset = running_sum / calibration_samples;
+    Serial.printf("[SYSTEM] Calibration complete. True Hardware Offset: %d\n", adc_hardware_offset);
 }
 
 void loop() {
