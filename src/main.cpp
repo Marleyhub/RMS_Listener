@@ -50,7 +50,21 @@ void loop() {
     vTaskDelete(NULL); 
 }
 
-// --- Task 1: Real-Time Signal Processing (Core 1) ---
+// void TaskSampling(void *pvParameters) {
+//     for (;;) {
+//         // Read the absolute raw value of the pin right now
+//         int rawDebug = analogRead(SENSOR_PIN);
+        
+//         // Calculate voltage seen by the pin
+//         float voltageDebug = (rawDebug / 4096.0) * 3.3;
+
+//         Serial.printf("[DEBUG] Raw ADC: %d | Voltage: %.3f V\n", rawDebug, voltageDebug);
+        
+//         vTaskDelay(pdMS_TO_TICKS(500)); // Sample twice a second
+//     }
+// }
+
+//--- Task 1: Real-Time Signal Processing (Core 1) ---
 void TaskSampling(void *pvParameters) {
     for (;;) {
         uint64_t sumSquares = 0;
@@ -90,7 +104,7 @@ void TaskSampling(void *pvParameters) {
         
         // Small rest to prevent watchdog triggers
         vTaskDelay(pdMS_TO_TICKS(10)); 
-    }
+    }   
 }
 
 // --- Task 2: UI / Terminal Output (Core 0) ---
