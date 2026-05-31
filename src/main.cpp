@@ -18,6 +18,7 @@ const int SENSOR_PIN = 34;
 const float VOLTAGE_AC = 127.0;
 const int SAMPLES = 2000;      // Increased for better averaging
 const int ADC_OFFSET = 2048;   // Midpoint of 12-bit ADC
+volatile int adc_hardware_offset = 2048;
 
 // Calibration breakdown:
 const float ADC_VOLTS_PER_STEP = 3.3 / 4096.0;
